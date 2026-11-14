@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""MAD build orchestrator v5 - crash-proof, ASCII only."""
+"""MAD build orchestrator v6 - report pushes to mad-report branch."""
 import json
 import os
+import shutil
 import subprocess
 import sys
 import traceback
@@ -31,11 +32,44 @@ def write_summary(tag):
         pass
 
 
+def push_report(tag):
+    ws = os.environ.get("GITHUB_WORKSPACE", os.getcwd())
+    try:
+        rf = os.path.join(ws, "MAD_REPORT.md")
+        f = open(rf, "w", encoding="utf-8")
+        f.write("# MAD Report [" + tag + "]\n\n```\n" + "\n".join(LINES) + "\n```\n")
+        f.close()
+        try:
+            shutil.copyfile(LOG, os.path.join(ws, "mad_build.log"))
+        except Exception:
+            pass
+        for c in (["git", "config", "user.name", "mad-bot"],
+                  ["git", "config", "user.email", "mad-bot@users.noreply.github.com"],
+                  ["git", "checkout", "-B", "mad-report"],
+                  ["git", "add", "-f", "MAD_REPORT.md", "mad_build.log"],
+                  ["git", "commit", "-m", "MAD report " + tag]):
+            subprocess.run(c, cwd=ws, capture_output=True, text=True, timeout=120)
+        token = os.environ.get("GITHUB_TOKEN", "")
+        repo = os.environ.get("GITHUB_REPOSITORY", "")
+        if token and repo:
+            url = "https://x-access-token:" + token + "@github.com/" + repo + ".git"
+            p = subprocess.run(["git", "push", url, "mad-report"], cwd=ws,
+                               capture_output=True, text=True, timeout=180)
+            if p.returncode == 0:
+                log("report mad-report branch pe push ho gaya")
+            else:
+                log("report push fail: " + (p.stderr or "")[:200])
+        else:
+            log("report push skip: GITHUB_TOKEN env missing")
+    except Exception as e:
+        log("push_report EXC: " + repr(e)[:200])
+
+
 def post_issue(subject):
     token = os.environ.get("GITHUB_TOKEN", "")
     repo = os.environ.get("GITHUB_REPOSITORY", "sheokandsushil02-lgtm/Mind-clone")
     if not token:
-        log("issue skip: token nahi")
+        log("issue skip: GITHUB_TOKEN env missing")
         return
     try:
         lf = open(LOG, encoding="utf-8", errors="replace")
@@ -62,6 +96,7 @@ def die(msg):
     log("BUILD-FAIL: " + msg)
     write_summary("FAIL")
     post_issue("MAD Build Failed: " + msg)
+    push_report("FAIL")
     sys.exit(1)
 
 
@@ -88,6 +123,7 @@ def run(cmd):
 
 def main():
     log("SCRIPT-START ok")
+    log("token env: " + ("HAI" if os.environ.get("GITHUB_TOKEN") else "NAHI"))
     open(LOG, "w").close()
 
     # 0) syntax check of patch scripts
@@ -186,4 +222,5 @@ except BaseException:
     log(traceback.format_exc()[:2000])
     write_summary("CRASH")
     post_issue("MAD Build CRASHED (uncaught exception)")
+    push_report("CRASH")
     sys.exit(1)
