@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
-"""MAD build orchestrator v6 - report pushes to mad-report branch."""
+"""MAD build orchestrator v6 - crash-proof, ASCII only, public annotations.
+
+v6: die() ab GitHub error annotations emit karta hai (::error::) jo
+run page par bina login dikhte hain. GITHUB_TOKEN na ho to bhi
+diagnostics public annotations me mil jayenge.
+"""
+import glob
 import json
 import os
-import shutil
 import subprocess
 import sys
 import traceback
@@ -21,6 +26,12 @@ def log(msg):
     LINES.append(line[:250])
 
 
+def annot(text):
+    t = str(text).replace("\n", " ").replace("\r", " ")
+    if t.strip():
+        print("::error::MAD6 | " + t[:230], flush=True)
+
+
 def write_summary(tag):
     if not SUMMARY:
         return
@@ -32,49 +43,27 @@ def write_summary(tag):
         pass
 
 
-def push_report(tag):
-    ws = os.environ.get("GITHUB_WORKSPACE", os.getcwd())
+def log_tail(n=12, maxlen=230):
     try:
-        rf = os.path.join(ws, "MAD_REPORT.md")
-        f = open(rf, "w", encoding="utf-8")
-        f.write("# MAD Report [" + tag + "]\n\n```\n" + "\n".join(LINES) + "\n```\n")
+        f = open(LOG, encoding="utf-8", errors="replace")
+        tail = f.read()[-4000:]
         f.close()
-        try:
-            shutil.copyfile(LOG, os.path.join(ws, "mad_build.log"))
-        except Exception:
-            pass
-        for c in (["git", "config", "user.name", "mad-bot"],
-                  ["git", "config", "user.email", "mad-bot@users.noreply.github.com"],
-                  ["git", "checkout", "-B", "mad-report"],
-                  ["git", "add", "-f", "MAD_REPORT.md", "mad_build.log"],
-                  ["git", "commit", "-m", "MAD report " + tag]):
-            subprocess.run(c, cwd=ws, capture_output=True, text=True, timeout=120)
-        token = os.environ.get("GITHUB_TOKEN", "")
-        repo = os.environ.get("GITHUB_REPOSITORY", "")
-        if token and repo:
-            url = "https://x-access-token:" + token + "@github.com/" + repo + ".git"
-            p = subprocess.run(["git", "push", url, "mad-report"], cwd=ws,
-                               capture_output=True, text=True, timeout=180)
-            if p.returncode == 0:
-                log("report mad-report branch pe push ho gaya")
-            else:
-                log("report push fail: " + (p.stderr or "")[:200])
-        else:
-            log("report push skip: GITHUB_TOKEN env missing")
-    except Exception as e:
-        log("push_report EXC: " + repr(e)[:200])
+        lines = [ln for ln in tail.splitlines() if ln.strip()]
+        return lines[-n:]
+    except Exception:
+        return []
 
 
 def post_issue(subject):
     token = os.environ.get("GITHUB_TOKEN", "")
     repo = os.environ.get("GITHUB_REPOSITORY", "sheokandsushil02-lgtm/Mind-clone")
     if not token:
-        log("issue skip: GITHUB_TOKEN env missing")
+        log("issue skip: GITHUB_TOKEN env nahi (workflow me export karna padta hai)")
         return
     try:
-        lf = open(LOG, encoding="utf-8", errors="replace")
-        tail = lf.read()[-6000:]
-        lf.close()
+        f = open(LOG, encoding="utf-8", errors="replace")
+        tail = f.read()[-6000:]
+        f.close()
     except Exception:
         tail = "(no log)"
     body = "\n".join(LINES)[:20000] + "\n--- log tail ---\n" + tail
@@ -94,9 +83,13 @@ def post_issue(subject):
 
 def die(msg):
     log("BUILD-FAIL: " + msg)
+    annot("BUILD FAILED: " + msg)
+    for ln in log_tail():
+        annot("LOG: " + ln)
+    for ln in LINES[-6:]:
+        annot("MADLOG: " + ln)
     write_summary("FAIL")
     post_issue("MAD Build Failed: " + msg)
-    push_report("FAIL")
     sys.exit(1)
 
 
@@ -123,13 +116,16 @@ def run(cmd):
 
 def main():
     log("SCRIPT-START ok")
-    log("token env: " + ("HAI" if os.environ.get("GITHUB_TOKEN") else "NAHI"))
-    open(LOG, "w").close()
+    try:
+        open(LOG, "w").close()
+    except Exception:
+        pass
 
     # 0) syntax check of patch scripts
     for s in ("overlay/patch_home.py", "overlay/patch_manifest.py"):
-        if run([sys.executable, "-m", "py_compile", s]) != 0:
-            die(s + " syntax error")
+        rc = run([sys.executable, "-m", "py_compile", s])
+        if rc != 0:
+            die(s + " me syntax error (py_compile fail)")
     log("patch scripts compile OK")
     write_summary("STEP1")
 
@@ -146,24 +142,26 @@ def main():
             except Exception as e:
                 log("raw url fail: " + repr(e)[:200])
     if not os.path.isfile(ZIP_NAME) or os.path.getsize(ZIP_NAME) < 100000:
-        die("ZIP nahi mili")
+        die("ZIP nahi mili (git show + raw url dono fail)")
     log("ZIP size: " + str(os.path.getsize(ZIP_NAME)))
 
-    # 2) patches
+    # 2) patches (patch_home v6 khud ZIP extract + merge karta hai)
     if run([sys.executable, "overlay/patch_home.py", "app-merged"]) != 0:
-        die("patch_home.py fail")
+        die("patch_home.py fail (nonzero exit)")
     if run([sys.executable, "overlay/patch_manifest.py", "app-merged"]) != 0:
         log("WARN: patch_manifest fail, jaari")
     for rel in ("settings.gradle.kts", "app/build.gradle.kts"):
         if not os.path.isfile(os.path.join("app-merged", rel)):
-            die("app-merged/" + rel + " nahi mila")
+            top = "(app-merged missing)"
+            if os.path.isdir("app-merged"):
+                top = ", ".join(sorted(os.listdir("app-merged"))[:25])
+            die("app-merged/" + rel + " nahi mila | app-merged top: " + top)
     log("app-merged top: " + ", ".join(sorted(os.listdir("app-merged"))[:20]))
     write_summary("STEP2")
 
     # 3) JDK
     jh = os.environ.get("JAVA_HOME", "")
     if not os.path.isdir(jh):
-        import glob
         c = sorted(glob.glob("/usr/lib/jvm/*17*") + glob.glob("/usr/lib/jvm/*temurin*"))
         jh = c[0] if c else ""
     if not jh or not os.path.isdir(jh):
@@ -199,28 +197,31 @@ def main():
             die("gradle binary nahi: " + gbin)
     if run([gbin, "--version"]) != 0:
         die("gradle nahi chala")
+    log("gradle: " + gbin)
 
     # 5) build
     os.chdir("app-merged")
     if run([gbin, "assembleDebug", "--no-daemon", "--stacktrace"]) != 0:
-        die("GRADLE BUILD FAIL")
+        die("GRADLE BUILD FAIL (log tail annotations me dekho)")
     apk = "app/build/outputs/apk/debug/app-debug.apk"
     if not os.path.isfile(apk):
         die("APK nahi bani: " + apk)
     mb = os.path.getsize(apk) // (1024 * 1024)
     log("APK-READY: " + str(mb) + " MB")
+    annot("APK READY " + str(mb) + " MB")
     write_summary("SUCCESS")
 
 
 try:
     main()
     log("DONE")
+    write_summary("DONE")
 except SystemExit:
     raise
 except BaseException:
     log("UNCAUGHT EXCEPTION:")
     log(traceback.format_exc()[:2000])
+    annot("CRASH: " + traceback.format_exc(limit=3)[-400:])
     write_summary("CRASH")
     post_issue("MAD Build CRASHED (uncaught exception)")
-    push_report("CRASH")
     sys.exit(1)
