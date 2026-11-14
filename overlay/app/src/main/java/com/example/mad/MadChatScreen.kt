@@ -7,12 +7,13 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -27,7 +28,7 @@ import kotlinx.coroutines.launch
 
 /**
  * MAD live-chat screen — naya feature overlay.
- * HomeScreen ke MAD button se yahan aate hain; original screens untouched.
+ * HomeScreen ke MAD button se MadActivity isi screen ko dikhati hai.
  */
 data class MadChatMessage(
     val id: Long = System.nanoTime(),
@@ -87,7 +88,7 @@ fun MadChatScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "🎙 MAD — Live Assistant",
+                    text = "\uD83C\uDFA4 MAD \u2014 Live Assistant",
                     color = RemsGold,
                     fontSize = 20.sp,
                     fontWeight = FontWeight.Black,
@@ -126,7 +127,6 @@ fun MadChatScreen(
 
             Spacer(Modifier.height(8.dp))
 
-            // Input row
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -197,24 +197,22 @@ fun MadChatScreen(
 }
 
 @Composable
-fun MadBubble(msg: MadChatMessage) {
+private fun MadBubble(msg: MadChatMessage) {
     val bg = if (msg.fromUser) RemsNavyCard else Color(0xFF233355)
-    val align = if (msg.fromUser) Alignment.CenterEnd else Alignment.CenterStart
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .wrapContentHeight(align = align)
+            .padding(horizontal = 4.dp),
+        contentAlignment = if (msg.fromUser) Alignment.CenterEnd else Alignment.CenterStart
     ) {
         Surface(
             color = bg,
             shape = RoundedCornerShape(
-                topStart = 14.dp, topEnd = 14.dp,
+                topStart = 14.dp,
+                topEnd = 14.dp,
                 bottomStart = if (msg.fromUser) 14.dp else 4.dp,
-                bottomEnd = if (msgfromUser(msg)) 4.dp else 14.dp
-            ),
-            modifier = Modifier
-                .padding(horizontal = 4.dp)
-                .align(align)
+                bottomEnd = if (msg.fromUser) 4.dp else 14.dp
+            )
         ) {
             Text(
                 text = msg.text,
@@ -226,10 +224,8 @@ fun MadBubble(msg: MadChatMessage) {
     }
 }
 
-private fun msgfromUser(m: MadChatMessage) = m.fromUser
-
 /**
- * MAD ko message bhejo, reply aane par chat me dikhao (aur chaho to bol bhi do).
+ * MAD ko message bhejo, reply chat me dikhao (aur chaho to bol bhi do).
  */
 suspend fun sendToMad(
     context: android.content.Context,
