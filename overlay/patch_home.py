@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""MAD patch v6 — extractor + patches + self-diagnostics.
+"""MAD patch v7 — extractor + patches + self-diagnostics.
 
-v6 naya:
-  - Poora patch report GitHub ISSUE me post hota hai (assistant usko padh kar
-    exact fix karega — build logs bina sign-in nahi milte)
-  - debug.keystore khud keytool se generate — original signing chalti rahe
-  - local.properties me sdk.dir — AGP ka fast-fail (SDK location) fix
-  - ~/.gradle/init.gradle hook — gradle build ka result bhi issue me jata hai
-  - Har step graceful — script kabhi exit 1 nahi karta
+v7 fix (asli bug):
+  v6 me pehli khoj par 'app' wala folder mil jata tha (weak match) aur
+  nested ZIP kabhi nahi khulti thi. Ab:
+    1. Sabse pehle SAARI nested ZIPs recursively khulti hain (depth tak 5)
+    2. Tab project root dhoondha jata hai — strong (settings.gradle.kts +
+       app manifest) ko tarjeeh, warna weak
+  - Poora patch report GitHub ISSUE me post hota hai
+  - debug.keystore khud keytool se generate
+  - local.properties me sdk.dir
+  - ~/.gradle/init.gradle hook — gradle build result bhi issue me
 """
 import glob
 import io
@@ -49,7 +52,6 @@ def gh_api(method, path, payload):
     token = os.environ.get("GITHUB_TOKEN", "")
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     if not token or not repo:
-        log("gh_api: GITHUB_TOKEN ya GITHUB_REPOSITORY env nahi mila")
         return None
     cmd = ["curl", "-s", "-X", method,
            "-H", "Authorization: Bearer " + token,
@@ -79,7 +81,7 @@ def post_patch_report():
             pass
         return res["number"]
     if res is None:
-        log("Diagnostics issue POST: curl/API se koi response nahi")
+        log("Diagnostics issue POST: koi response nahi (token/env missing?)")
     else:
         log("Diagnostics issue POST fail: " + json.dumps(res)[:300])
     return None
@@ -101,7 +103,9 @@ def find_project_root(base):
     pool = strong or weak
     if not pool:
         return None
-    return min(pool, key=lambda p: (p.count(os.sep), len(p)))
+    root = min(pool, key=lambda p: (p.count(os.sep), len(p)))
+    log("root dhoondha: " + os.path.relpath(root, base) + " | strong=" + str(bool(strong)))
+    return root
 
 
 def unzip_to(zip_path, dst):
@@ -112,7 +116,7 @@ def unzip_to(zip_path, dst):
 
 def ensure_zip():
     if os.path.isfile(ZIP_NAME) and os.path.getsize(ZIP_NAME) > 100000:
-        log("ZIP branch par maujood hai (" + str(os.path.getsize(ZIP_NAME)) + " bytes)")
+        log("ZIP maujood hai (" + str(os.path.getsize(ZIP_NAME)) + " bytes)")
         return True
     try:
         r = subprocess.run(["git", "show", "origin/main:" + ZIP_NAME],
@@ -120,9 +124,7 @@ def ensure_zip():
         if r.returncode == 0 and os.path.isfile(ZIP_NAME) and os.path.getsize(ZIP_NAME) > 100000:
             log("git se ZIP aa gayi")
             return True
-        log("git show fail: " + r.stderr.decode("utf-8", "replace")[:200])
     except Exception:
-        log("git show exception:")
         traceback.print_exc()
     try:
         r = subprocess.run(["curl", "-sSL", "--retry", "3", "-o", ZIP_NAME, RAW_URL],
@@ -130,16 +132,38 @@ def ensure_zip():
         if r.returncode == 0 and os.path.isfile(ZIP_NAME) and os.path.getsize(ZIP_NAME) > 100000:
             log("raw URL se ZIP aa gayi")
             return True
-        log("curl download fail")
     except Exception:
-        log("curl exception:")
         traceback.print_exc()
     return False
 
 
+def extract_nested_zips(outer, max_depth=5):
+    """SAARI nested ZIPs pehle hi khulwa do — phir root dhoondo."""
+    for depth in range(1, max_depth + 1):
+        inner_zips = []
+        for dirpath, dirnames, filenames in os.walk(outer):
+            dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+            for fn in filenames:
+                if fn.lower().endswith(".zip"):
+                    inner_zips.append(os.path.join(dirpath, fn))
+        if not inner_zips:
+            if depth == 1:
+                log("koi nested ZIP nahi mili")
+            return
+        log("nested ZIPs depth " + str(depth) + ": " + str(len(inner_zips)))
+        for iz in inner_zips:
+            try:
+                dstx = os.path.join(os.path.dirname(iz), os.path.basename(iz)[:-4] + "_unzipped")
+                unzip_to(iz, dstx)
+                os.remove(iz)
+                log("nested ZIP khola: " + os.path.basename(iz))
+            except Exception:
+                log("nested ZIP nahi khuli: " + os.path.basename(iz))
+
+
 def extract_real_project(dst):
     if not ensure_zip():
-        log("ZIP kisi tarah nahi mili — project merge nahi ho payega")
+        log("ZIP kisi tarah nahi mili")
         return False
     tmp = tempfile.mkdtemp(prefix="madzip_")
     try:
@@ -150,34 +174,15 @@ def extract_real_project(dst):
             for n in names[:40]:
                 log("  Z " + n)
         except Exception:
-            log("ZIP padhne me dikkat (invalid zip?):")
+            log("ZIP padhne me dikkat:")
             traceback.print_exc()
             return False
         outer = os.path.join(tmp, "outer")
         unzip_to(ZIP_NAME, outer)
         log("ZIP extract ho gayi")
+        # v7: pehle SAARI nested zips kholein
+        extract_nested_zips(outer)
         proj = find_project_root(outer)
-        depth = 0
-        while not proj and depth < 5:
-            depth += 1
-            inner_zips = []
-            for dirpath, dirnames, filenames in os.walk(outer):
-                dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
-                for fn in filenames:
-                    if fn.lower().endswith(".zip"):
-                        inner_zips.append(os.path.join(dirpath, fn))
-            if not inner_zips:
-                break
-            log("nested zips (depth " + str(depth) + "): " + str(len(inner_zips)))
-            for iz in inner_zips:
-                try:
-                    dstx = os.path.join(os.path.dirname(iz), os.path.basename(iz)[:-4] + "_unzipped")
-                    unzip_to(iz, dstx)
-                    os.remove(iz)
-                    log("nested ZIP khola: " + os.path.basename(iz))
-                except Exception:
-                    log("nested ZIP nahi khuli: " + os.path.basename(iz))
-            proj = find_project_root(outer)
         if not proj:
             log("PROJECT ROOT NAHI MILA — structure dump:")
             count = 0
@@ -190,10 +195,11 @@ def extract_real_project(dst):
                     log("  ... (aur bhi hain)")
                     break
             return False
-        log("project mila: " + os.path.relpath(proj, outer))
+        log("asli project: " + os.path.relpath(proj, outer))
         ignore = shutil.ignore_patterns("build", ".gradle", ".idea", "*.jks", "*.keystore")
         shutil.copytree(proj, dst, dirs_exist_ok=True, ignore=ignore)
-        log("asli project app-merged me merge ho gaya")
+        log("project merge ho gaya app-merged me")
+        log("merge ke baad app-merged top: " + ", ".join(sorted(os.listdir(dst))[:25]))
         return True
     except Exception:
         log("extract me dikkat:")
@@ -384,19 +390,18 @@ try:
 except Exception:
     traceback.print_exc()
 
-# ---------- 5) gradlew cleanup (system gradle use hoga) ----------
+# ---------- 5) gradlew cleanup ----------
 try:
     for gw in ("gradlew", "gradlew.bat"):
         p = os.path.join(ROOT, gw)
         if os.path.isfile(p):
             os.remove(p)
-    log("gradlew hata diya — setup-gradle wala gradle use hoga")
+    log("gradlew hata diya — script-wala gradle use hoga")
 except Exception:
     traceback.print_exc()
 
-# ---------- 6) gradle init hook (build result issue me) ----------
+# ---------- 6) gradle init hook ----------
 INIT_GRADLE = r'''
-// MAD auto-generated: build result ko GitHub issue me post karne wala hook
 try {
     gradle.buildFinished { result ->
         try {
@@ -426,7 +431,7 @@ try:
     gradle_home = os.path.expanduser("~/.gradle")
     os.makedirs(gradle_home, exist_ok=True)
     io.open(os.path.join(gradle_home, "init.gradle"), "w", encoding="utf-8").write(INIT_GRADLE)
-    log("gradle init hook lag gaya (~/.gradle/init.gradle)")
+    log("gradle init hook lag gaya")
 except Exception:
     traceback.print_exc()
 
