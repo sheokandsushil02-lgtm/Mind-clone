@@ -19,7 +19,7 @@ import java.util.concurrent.TimeUnit
  */
 object MadEngine {
 
-    private const val MODEL = "gemini-2.0-flash"
+    private const val MODEL = "gemini-3.8-flash"
     private const val PREFS = "mad_assistant_prefs"
 
     private val client = OkHttpClient.Builder()
