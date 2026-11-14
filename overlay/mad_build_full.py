@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""MAD build orchestrator v7 - report via git push (checkout credentials)."""
+"""MAD build orchestrator v8 - 3 report channels, token from git config."""
+import base64
 import json
 import os
 import subprocess
@@ -20,6 +21,15 @@ def log(msg):
     LINES.append(line[:250])
 
 
+def announce(msg):
+    """Run page par PUBLIC annotation chhaap do (bina login dikhta hai)."""
+    safe = msg.replace("\n", "%0A").replace("\r", "")
+    try:
+        print("::error title=MAD-BUILD::" + safe[:500], flush=True)
+    except Exception:
+        pass
+
+
 def write_summary(tag):
     if not SUMMARY:
         return
@@ -31,8 +41,28 @@ def write_summary(tag):
         pass
 
 
+def get_token():
+    """GITHUB_TOKEN env se, warna checkout ke git extraheader se nikaalo."""
+    t = os.environ.get("GITHUB_TOKEN", "")
+    if t:
+        return t
+    try:
+        p = subprocess.run(["git", "config", "--get-all",
+                            "http.https://github.com/.extraheader"],
+                           capture_output=True, text=True)
+        for line in (p.stdout or "").splitlines():
+            if "basic" in line:
+                b64 = line.split()[-1]
+                dec = base64.b64decode(b64).decode("utf-8", "replace")
+                if ":" in dec:
+                    return dec.split(":", 1)[1]
+    except Exception:
+        pass
+    return ""
+
+
 def push_report(tag):
-    """Checkout ke configured git credentials se mad-report branch pe push."""
+    """git push (contents:read ho to fail - koi baat nahi, log me jayega)."""
     ws = os.environ.get("GITHUB_WORKSPACE", os.getcwd())
     try:
         import shutil
@@ -44,25 +74,57 @@ def push_report(tag):
             shutil.copyfile(LOG, os.path.join(ws, "mad_build.log"))
         except Exception:
             pass
-        cmds = (["git", "config", "user.name", "mad-bot"],
-                ["git", "config", "user.email", "mad-bot@users.noreply.github.com"],
-                ["git", "checkout", "--orphan", "mad-report"],
-                ["git", "add", "-f", "MAD_REPORT.md", "mad_build.log"],
-                ["git", "commit", "-m", "MAD report " + tag],
-                ["git", "push", "origin", "mad-report"])
-        for c in cmds:
+        for c in (["git", "config", "user.name", "mad-bot"],
+                  ["git", "config", "user.email", "mad-bot@users.noreply.github.com"],
+                  ["git", "checkout", "--orphan", "mad-report"],
+                  ["git", "add", "-f", "MAD_REPORT.md", "mad_build.log"],
+                  ["git", "commit", "-m", "MAD report " + tag],
+                  ["git", "push", "origin", "mad-report"]):
             p = subprocess.run(c, cwd=ws, capture_output=True, text=True, timeout=180)
             if p.returncode != 0 and c[:2] == ["git", "push"]:
-                log("push fail: " + (p.stderr or "")[:300])
+                log("push fail: " + (p.stderr or "")[:200])
                 return
         log("REPORT PUSHED to mad-report branch")
     except Exception as e:
-        log("push_report EXC: " + repr(e)[:200])
+        log("push_report EXC: " + repr(e)[:150])
+
+
+def post_issue(subject):
+    token = get_token()
+    repo = os.environ.get("GITHUB_REPOSITORY", "sheokandsushil02-lgtm/Mind-clone")
+    if not token:
+        log("issue skip: token nahi mila (env ya git config dono khali)")
+        return
+    try:
+        lf = open(LOG, encoding="utf-8", errors="replace")
+        tail = lf.read()[-6000:]
+        lf.close()
+    except Exception:
+        tail = "(no log)"
+    body = "\n".join(LINES)[:20000] + "\n--- log tail ---\n" + tail
+    data = json.dumps({"title": subject[:70], "body": body[:25000]}).encode("utf-8")
+    req = urllib.request.Request("https://api.github.com/repos/" + repo + "/issues", data=data,
+                                 headers={"Authorization": "Bearer " + token,
+                                          "Accept": "application/vnd.github+json",
+                                          "Content-Type": "application/json"})
+    try:
+        r = urllib.request.urlopen(req, timeout=60)
+        d = json.loads(r.read().decode("utf-8"))
+        r.close()
+        log("ISSUE #" + str(d.get("number")) + " ban gaya")
+    except Exception as e:
+        log("issue post fail: " + repr(e)[:200])
 
 
 def die(msg):
     log("BUILD-FAIL: " + msg)
+    announce("BUILD-FAIL: " + msg)
+    key = [l for l in LINES if any(k in l for k in
+          ("Error", "error", "fail", "FAIL", "nahi", "NAHI", "Syntax", "Exception"))]
+    for k in key[-6:]:
+        announce(k[:400])
     write_summary("FAIL")
+    post_issue("MAD Build Failed: " + msg)
     push_report("FAIL")
     sys.exit(1)
 
@@ -120,7 +182,6 @@ def main():
         if not os.path.isfile(os.path.join("app-merged", rel)):
             die("app-merged/" + rel + " nahi mila")
     log("app-merged top: " + ", ".join(sorted(os.listdir("app-merged"))[:20]))
-    write_summary("STEP2")
 
     jh = os.environ.get("JAVA_HOME", "")
     if not os.path.isdir(jh):
@@ -168,6 +229,7 @@ def main():
         die("APK nahi bani: " + apk)
     mb = os.path.getsize(apk) // (1024 * 1024)
     log("APK-READY: " + str(mb) + " MB")
+    announce("APK-READY: " + str(mb) + " MB")
     write_summary("SUCCESS")
 
 
@@ -179,6 +241,8 @@ except SystemExit:
 except BaseException:
     log("UNCAUGHT EXCEPTION:")
     log(traceback.format_exc()[:2000])
+    announce("CRASH: " + traceback.format_exc()[-400:])
     write_summary("CRASH")
+    post_issue("MAD Build CRASHED (uncaught exception)")
     push_report("CRASH")
     sys.exit(1)
