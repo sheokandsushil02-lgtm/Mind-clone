@@ -19,6 +19,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ui.theme.RemsGold
@@ -29,6 +30,7 @@ import kotlinx.coroutines.launch
 /**
  * MAD live-chat screen — naya feature overlay.
  * HomeScreen ke MAD button se MadActivity isi screen ko dikhati hai.
+ * v2: jab tak API key nahi hai, chat ke upar BADA setup banner dikhta hai.
  */
 data class MadChatMessage(
     val id: Long = System.nanoTime(),
@@ -49,6 +51,12 @@ fun MadChatScreen(
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
 
+    // key status — settings se wapas aane par refresh bhi ho jaye
+    var hasKey by remember { mutableStateOf(MadEngine.hasApiKey(context)) }
+    DisposableEffect(Unit) {
+        onDispose { }
+    }
+
     val madVoice = remember { MadVoice(context) }
     DisposableEffect(Unit) {
         madVoice.onHeard = { text ->
@@ -67,6 +75,14 @@ fun MadChatScreen(
         }
         madVoice.onListeningStateChanged = { lst -> listening = lst }
         onDispose { madVoice.destroy() }
+    }
+
+    // settings se wapas aaye to key-status dobara check
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(1000)
+            hasKey = MadEngine.hasApiKey(context)
+        }
     }
 
     LaunchedEffect(messages.size) {
@@ -104,6 +120,55 @@ fun MadChatScreen(
 
             Spacer(Modifier.height(8.dp))
 
+            // ===== BADA API KEY SETUP BANNER (jab tak key nahi hai) =====
+            if (!hasKey) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(containerColor = RemsGold)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            "\u26A0\uFE0F API Key abhi set NAHI hai",
+                            color = Color(0xFF0D1B2A),
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Black,
+                            textAlign = TextAlign.Center
+                        )
+                        Text(
+                            "MAD bol payegi iske baad hi. Key free milti hai.",
+                            color = Color(0xFF1D2B45),
+                            fontSize = 12.5.sp,
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        Button(
+                            onClick = onOpenSettings,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFF0D1B2A)
+                            ),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(46.dp)
+                        ) {
+                            Text(
+                                "\uD83D\uDD11 API Key Daalo (Settings)",
+                                color = RemsGold,
+                                fontWeight = FontWeight.Black,
+                                fontSize = 15.sp
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+            }
+
             LazyColumn(
                 state = listState,
                 modifier = Modifier
@@ -111,6 +176,19 @@ fun MadChatScreen(
                     .fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
+                if (messages.isEmpty() && !hasKey) {
+                    item {
+                        Text(
+                            "Pehle upar wala button dabakar API key daalo, phir MAD se baat karo.",
+                            color = Color(0xFF9FB8D9),
+                            fontSize = 13.sp,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 10.dp)
+                        )
+                    }
+                }
                 items(messages, key = { it.id }) { msg ->
                     MadBubble(msg)
                 }
