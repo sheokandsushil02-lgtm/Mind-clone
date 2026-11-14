@@ -1,0 +1,27 @@
+name: Extract App Source
+on:
+  push:
+    branches: [ extract ]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - run: unzip -q madgitfileforcloud.zip -d extracted
+      - run: find extracted -maxdepth 2 | head -40
+      - run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B app-source
+          git rm -rf --cached . -q
+          rm -rf ./*
+          cp -r extracted/. .
+          rm -rf extracted
+          git add -A
+          git commit -m "Extract Android project from zip"
+          git push -f origin app-source
