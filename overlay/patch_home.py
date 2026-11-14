@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""MAD patch v5 — extractor + HomeScreen patch + diagnostics.
+"""MAD patch v6 — extractor + patches + self-diagnostics.
 
-argv[1] = merged project dir (default: app-merged)
-
-v5 (CRITICAL FIX): workflow apne step me original-app.zip delete kar deta hai
-is script se thehle. Ab script ZIP khud laati hai — pehle file se, warna
-`git show origin/main:madgitfileforcloud.zip` se, warna GitHub raw URL se.
-Isse build hamesha asli project ke saath aage badhega.
+v6 naya:
+  - Poora patch report GitHub ISSUE me post hota hai (assistant usko padh kar
+    exact fix karega — build logs bina sign-in nahi milte)
+  - debug.keystore khud keytool se generate — original signing chalti rahe
+  - local.properties me sdk.dir — AGP ka fast-fail (SDK location) fix
+  - ~/.gradle/init.gradle hook — gradle build ka result bhi issue me jata hai
+  - Har step graceful — script kabhi exit 1 nahi karta
 """
 import glob
 import io
+import json
 import os
 import shutil
 import subprocess
@@ -24,10 +26,11 @@ RAW_URL = "https://github.com/sheokandsushil02-lgtm/Mind-clone/raw/main/" + ZIP_
 OVERLAY_MAD = os.path.join("overlay", "app", "src", "main", "java", "com", "example", "mad")
 MANIFEST = os.path.join(ROOT, "app", "src", "main", "AndroidManifest.xml")
 SUMMARY_LINES = []
+ISSUE_NUM_FILE = "/tmp/mad_issue_number.txt"
 
 
 def log(msg):
-    line = "MAD-PATCH: " + msg
+    line = "MAD-PATCH: " + str(msg)
     print(line)
     SUMMARY_LINES.append(line)
 
@@ -42,43 +45,47 @@ def flush_summary():
             pass
 
 
+def gh_api(method, path, payload):
+    token = os.environ.get("GITHUB_TOKEN", "")
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    if not token or not repo:
+        log("gh_api: GITHUB_TOKEN ya GITHUB_REPOSITORY env nahi mila")
+        return None
+    cmd = ["curl", "-s", "-X", method,
+           "-H", "Authorization: Bearer " + token,
+           "-H", "Accept: application/vnd.github+json",
+           "-d", json.dumps(payload),
+           "https://api.github.com/repos/" + repo + path]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+        return json.loads(r.stdout or "{}")
+    except Exception:
+        return None
+
+
+def post_patch_report():
+    run_id = os.environ.get("GITHUB_RUN_ID", "local")
+    title = "MAD Build Diagnostics (run " + run_id + ")"
+    body = "Auto-generated patch report — assistant isko padh kar fix karega.\n\n```\n" + \
+           "\n".join(SUMMARY_LINES) + "\n```\n"
+    if len(body) > 12000:
+        body = body[:12000] + "\n... (truncated)\n"
+    res = gh_api("POST", "/issues", {"title": title, "body": body})
+    if res and res.get("number"):
+        log("Diagnostics issue ban gaya #" + str(res["number"]))
+        try:
+            io.open(ISSUE_NUM_FILE, "w").write(str(res["number"]))
+        except Exception:
+            pass
+        return res["number"]
+    if res is None:
+        log("Diagnostics issue POST: curl/API se koi response nahi")
+    else:
+        log("Diagnostics issue POST fail: " + json.dumps(res)[:300])
+    return None
+
+
 SKIP_DIRS = {"build", ".gradle", ".idea", "intermediates", "__pycache__", "node_modules"}
-
-
-def ensure_zip():
-    """ZIP maujood na ho to khud laao (git se, warna raw URL se)."""
-    if os.path.isfile(ZIP_NAME) and os.path.getsize(ZIP_NAME) > 100000:
-        log("ZIP maujood hai: " + ZIP_NAME)
-        return True
-    # 1) git se
-    try:
-        log("ZIP gawayab — git se laa raha hoon")
-        r = subprocess.run(
-            ["git", "show", "origin/main:" + ZIP_NAME],
-            stdout=open(ZIP_NAME, "wb"), stderr=subprocess.PIPE, timeout=300
-        )
-        if r.returncode == 0 and os.path.getsize(ZIP_NAME) > 100000:
-            log("git se ZIP aa gayi (%d bytes)" % os.path.getsize(ZIP_NAME))
-            return True
-        log("git se nahi mili: " + r.stderr.decode("utf-8", "replace")[:200])
-    except Exception:
-        log("git fetch fail:")
-        traceback.print_exc()
-    # 2) raw URL se
-    try:
-        log("raw URL se download kar raha hoon")
-        r = subprocess.run(
-            ["curl", "-sSL", "--retry", "3", "-o", ZIP_NAME, RAW_URL],
-            stderr=subprocess.PIPE, timeout=600
-        )
-        if r.returncode == 0 and os.path.isfile(ZIP_NAME) and os.path.getsize(ZIP_NAME) > 100000:
-            log("raw URL se ZIP aa gayi (%d bytes)" % os.path.getsize(ZIP_NAME))
-            return True
-        log("raw URL se bhi fail")
-    except Exception:
-        log("curl fail:")
-        traceback.print_exc()
-    return False
 
 
 def find_project_root(base):
@@ -103,29 +110,53 @@ def unzip_to(zip_path, dst):
         z.extractall(dst)
 
 
+def ensure_zip():
+    if os.path.isfile(ZIP_NAME) and os.path.getsize(ZIP_NAME) > 100000:
+        log("ZIP branch par maujood hai (" + str(os.path.getsize(ZIP_NAME)) + " bytes)")
+        return True
+    try:
+        r = subprocess.run(["git", "show", "origin/main:" + ZIP_NAME],
+                            stdout=open(ZIP_NAME, "wb"), stderr=subprocess.PIPE, timeout=300)
+        if r.returncode == 0 and os.path.isfile(ZIP_NAME) and os.path.getsize(ZIP_NAME) > 100000:
+            log("git se ZIP aa gayi")
+            return True
+        log("git show fail: " + r.stderr.decode("utf-8", "replace")[:200])
+    except Exception:
+        log("git show exception:")
+        traceback.print_exc()
+    try:
+        r = subprocess.run(["curl", "-sSL", "--retry", "3", "-o", ZIP_NAME, RAW_URL],
+                            stderr=subprocess.PIPE, timeout=600)
+        if r.returncode == 0 and os.path.isfile(ZIP_NAME) and os.path.getsize(ZIP_NAME) > 100000:
+            log("raw URL se ZIP aa gayi")
+            return True
+        log("curl download fail")
+    except Exception:
+        log("curl exception:")
+        traceback.print_exc()
+    return False
+
+
 def extract_real_project(dst):
     if not ensure_zip():
-        log("FATAL-INFO: ZIP kisi tarah se nahi mili — project merge nahi hoga")
+        log("ZIP kisi tarah nahi mili — project merge nahi ho payega")
         return False
     tmp = tempfile.mkdtemp(prefix="madzip_")
     try:
         try:
             with zipfile.ZipFile(ZIP_NAME) as z:
                 names = z.namelist()
-            log("ZIP me kul %d files hain. Pehli 300:" % len(names))
-            for n in names[:300]:
+            log("ZIP me kul " + str(len(names)) + " entries. Pehli 40:")
+            for n in names[:40]:
                 log("  Z " + n)
         except Exception:
-            log("ZIP padhne me dikkat:")
+            log("ZIP padhne me dikkat (invalid zip?):")
             traceback.print_exc()
             return False
-
         outer = os.path.join(tmp, "outer")
         unzip_to(ZIP_NAME, outer)
-        log("outer ZIP extract ho gaya")
-
+        log("ZIP extract ho gayi")
         proj = find_project_root(outer)
-
         depth = 0
         while not proj and depth < 5:
             depth += 1
@@ -136,33 +167,29 @@ def extract_real_project(dst):
                     if fn.lower().endswith(".zip"):
                         inner_zips.append(os.path.join(dirpath, fn))
             if not inner_zips:
-                log("aur koi nested ZIP nahi mili (depth %d)" % depth)
                 break
-            log("depth %d: %d nested ZIPs mili" % (depth, len(inner_zips)))
-            for i, iz in enumerate(inner_zips):
-                idst = os.path.join(tmp, "nested_%d_%d" % (depth, i))
+            log("nested zips (depth " + str(depth) + "): " + str(len(inner_zips)))
+            for iz in inner_zips:
                 try:
-                    unzip_to(iz, idst)
-                    log("nested ZIP khola: " + os.path.basename(iz))
+                    dstx = os.path.join(os.path.dirname(iz), os.path.basename(iz)[:-4] + "_unzipped")
+                    unzip_to(iz, dstx)
                     os.remove(iz)
+                    log("nested ZIP khola: " + os.path.basename(iz))
                 except Exception:
                     log("nested ZIP nahi khuli: " + os.path.basename(iz))
-                    continue
             proj = find_project_root(outer)
-
         if not proj:
-            log("PROJECT ROOT NAHI MILA. extracted ka structure dump:")
+            log("PROJECT ROOT NAHI MILA — structure dump:")
             count = 0
             for dirpath, dirnames, filenames in os.walk(outer):
                 dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
                 rel = os.path.relpath(dirpath, outer)
                 log("  D " + rel + " :: " + ", ".join(sorted(filenames)[:12]))
                 count += 1
-                if count > 80:
-                    log("  ... (aur bhi bahut hain)")
+                if count > 60:
+                    log("  ... (aur bhi hain)")
                     break
             return False
-
         log("project mila: " + os.path.relpath(proj, outer))
         ignore = shutil.ignore_patterns("build", ".gradle", ".idea", "*.jks", "*.keystore")
         shutil.copytree(proj, dst, dirs_exist_ok=True, ignore=ignore)
@@ -176,18 +203,24 @@ def extract_real_project(dst):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# ---------- 0) project nikalo agar app-merged khali/adhura hai ----------
 if not os.path.isfile(MANIFEST):
     log("app-merged me manifest nahi — asli project ZIP se nikal raha hoon")
     extract_real_project(ROOT)
 else:
-    log("app-merged me project pehle se maujood hai")
+    log("app-merged me project maujood hai")
 
-if os.path.isfile(MANIFEST):
-    log("AndroidManifest.xml OK")
+if os.path.isdir(ROOT):
+    log("app-merged top-level: " + ", ".join(sorted(os.listdir(ROOT))[:25]))
 else:
-    log("FATAL-INFO: AndroidManifest.xml nahi mila — gradle aage fail hoga, par summary me structure hai")
+    log("FATAL: app-merged directory hi nahi hai")
 
-# MAD overlay .kt files (safety copy)
+for rel in ["settings.gradle.kts", "app/build.gradle.kts", "gradle.properties",
+            "gradle/libs.versions.toml", ".env.example", "app/src/main/AndroidManifest.xml"]:
+    state = "HAI  " if os.path.isfile(os.path.join(ROOT, rel)) else "NAHI "
+    log(state + rel)
+
+# ---------- 1) MAD overlay .kt files ----------
 try:
     if os.path.isdir(OVERLAY_MAD):
         target_mad = os.path.join(ROOT, "app", "src", "main", "java", "com", "example", "mad")
@@ -196,11 +229,11 @@ try:
         for f in glob.glob(os.path.join(OVERLAY_MAD, "*.kt")):
             shutil.copy2(f, target_mad)
             n += 1
-        log("MAD .kt files copy: %d" % n)
+        log("MAD .kt files copy: " + str(n))
 except Exception:
     traceback.print_exc()
 
-# HomeScreen MAD button
+# ---------- 2) HomeScreen MAD button ----------
 target = None
 cands = glob.glob(os.path.join(ROOT, "app/src/main/java/**/HomeScreen.kt"), recursive=True)
 for c in cands:
@@ -307,33 +340,96 @@ else:
         log("HomeScreen patch me dikkat:")
         traceback.print_exc()
 
-# debug signing fix
-try:
-    ks = os.path.join(ROOT, "debug.keystore")
-    bld = os.path.join(ROOT, "app", "build.gradle.kts")
-    if os.path.isfile(bld) and not os.path.isfile(ks):
-        g = io.open(bld, encoding="utf-8").read()
-        old = 'debug { signingConfig = signingConfigs.getByName("debugConfig") }'
-        if old in g:
-            g = g.replace(old, 'debug { /* MAD: default debug signing */ }', 1)
-            io.open(bld, "w", encoding="utf-8").write(g)
-            log("debug signing neutralize ho gaya (debug.keystore missing tha)")
-        else:
-            log("debugConfig line nahi mili — gradle file as-is")
+# ---------- 3) debug.keystore generate ----------
+ks = os.path.join(ROOT, "debug.keystore")
+bld = os.path.join(ROOT, "app", "build.gradle.kts")
+if os.path.isfile(bld) and not os.path.isfile(ks):
+    kt = shutil.which("keytool")
+    ok = False
+    if kt:
+        try:
+            subprocess.run([kt, "-genkeypair", "-keystore", ks, "-storepass", "android",
+                            "-alias", "androiddebugkey", "-keypass", "android",
+                            "-dname", "CN=Android Debug,O=Android,C=US",
+                            "-keyalg", "RSA", "-keysize", "2048", "-validity", "9999"],
+                           check=True, capture_output=True, timeout=180)
+            ok = os.path.isfile(ks)
+        except Exception:
+            ok = False
+    if ok:
+        log("debug.keystore generate ho gaya (keytool se) — original signing chalegi")
     else:
-        log("debug.keystore maujood hai ya build file missing — signing untouched")
+        log("keytool se keystore nahi bana — debug signing neutralize karta hoon")
+        try:
+            g = io.open(bld, encoding="utf-8").read()
+            old = 'debug { signingConfig = signingConfigs.getByName("debugConfig") }'
+            if old in g:
+                io.open(bld, "w", encoding="utf-8").write(
+                    g.replace(old, 'debug { /* MAD: default debug signing */ }', 1))
+                log("debug signing neutralize ho gaya")
+            else:
+                log("debugConfig line nahi mili — gradle file as-is")
+        except Exception:
+            traceback.print_exc()
+else:
+    log("debug.keystore already hai ya build file missing")
+
+# ---------- 4) local.properties (SDK path) ----------
+try:
+    sdk = (os.environ.get("ANDROID_HOME") or os.environ.get("ANDROID_SDK_ROOT")
+           or "/usr/local/lib/android/sdk")
+    io.open(os.path.join(ROOT, "local.properties"), "w", encoding="utf-8").write(
+        "sdk.dir=" + sdk + "\n")
+    log("local.properties likha (sdk.dir=" + sdk + ")")
 except Exception:
     traceback.print_exc()
 
-# gradlew hatao — system gradle use hoga
+# ---------- 5) gradlew cleanup (system gradle use hoga) ----------
 try:
     for gw in ("gradlew", "gradlew.bat"):
         p = os.path.join(ROOT, gw)
         if os.path.isfile(p):
             os.remove(p)
-    log("gradlew hataya gaya — system gradle use hoga")
+    log("gradlew hata diya — setup-gradle wala gradle use hoga")
 except Exception:
     traceback.print_exc()
 
-log("done")
+# ---------- 6) gradle init hook (build result issue me) ----------
+INIT_GRADLE = r'''
+// MAD auto-generated: build result ko GitHub issue me post karne wala hook
+try {
+    gradle.buildFinished { result ->
+        try {
+            def status = (result.failure != null) ? ("FAILED\n\n" + result.failure.toString()) : "SUCCESS - APK ban gaya!"
+            def num = null
+            def nf = new File("/tmp/mad_issue_number.txt")
+            if (nf.exists()) { num = nf.text.trim() }
+            def repo = System.getenv("GITHUB_REPOSITORY")
+            def token = System.getenv("GITHUB_TOKEN")
+            if (repo == null || token == null) { return }
+            def msg = "GRADLE RESULT: " + status.take(2500)
+            def payload = (num != null && num != "")
+                ? groovy.json.JsonOutput.toJson([body: msg])
+                : groovy.json.JsonOutput.toJson([title: "MAD Gradle Result", body: msg])
+            def path = (num != null && num != "") ? ("/issues/" + num + "/comments") : "/issues"
+            def cmd = "curl -s -X POST -H 'Authorization: Bearer " + token + "' -H 'Accept: application/vnd.github+json' -d '" + payload.replace("'", "'\\''") + "' https://api.github.com/repos/" + repo + path
+            ["bash", "-c", cmd].execute()
+        } catch (Throwable t) {
+            println "MAD hook inner: " + t
+        }
+    }
+} catch (Throwable t) {
+    println "MAD hook: buildFinished API nahi mili (skip): " + t
+}
+'''
+try:
+    gradle_home = os.path.expanduser("~/.gradle")
+    os.makedirs(gradle_home, exist_ok=True)
+    io.open(os.path.join(gradle_home, "init.gradle"), "w", encoding="utf-8").write(INIT_GRADLE)
+    log("gradle init hook lag gaya (~/.gradle/init.gradle)")
+except Exception:
+    traceback.print_exc()
+
+log("patch phase complete")
+post_patch_report()
 flush_summary()
