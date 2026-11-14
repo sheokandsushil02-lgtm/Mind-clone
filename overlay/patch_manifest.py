@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""MAD manifest patch v2 — RECORD_AUDIO permission + MadActivity register.
-argv[1] = AndroidManifest.xml ka path YA project root.
-Graceful: koi dikkat ho to bhi build nahi rukta (par exit 1 warna APK me mic nahi milega)."""
+"""MAD manifest patch v3 — RECORD_AUDIO permission + MadActivity register.
+argv[1] = project root YA manifest path.
+v3 fix: permission hamesha <application> se thehle pehle jaati hai (manifest ke andar),
+pichle version me XML declaration ke baad galti se bahar chali jaati thi."""
 import io, os, sys, glob, traceback
 
 hint = sys.argv[1] if len(sys.argv) > 1 else "app-merged"
@@ -13,7 +14,7 @@ else:
     root = hint if os.path.isdir(hint) else "app-merged"
     cands = glob.glob(os.path.join(root, "app/src/main/AndroidManifest.xml"))
     if not cands:
-        cands = glob.glob(os.path.join(root, "**/AndroidManifest.xml"), recursive=True)
+        cands = glob.glob(os.path.join(root, "**/src/main/AndroidManifest.xml"), recursive=True)
     if cands:
         target = cands[0]
 
@@ -32,25 +33,23 @@ except Exception:
 changed = []
 
 if "RECORD_AUDIO" not in src:
-    idx = src.find(">")
-    # manifest tag ke closing > ke baad permission
-    src = src[:idx + 1] + '\n    <uses-permission android:name="android.permission.RECORD_AUDIO" />' + src[idx + 1:]
+    idx = src.find("<application")
+    if idx == -1:
+        print("MAD-PATCH-MANIFEST: FATAL: <application> tag nahi mila")
+        sys.exit(1)
+    perm = '<uses-permission android:name="android.permission.RECORD_AUDIO" />\n\n    '
+    src = src[:idx] + perm + src[idx:]
     changed.append("RECORD_AUDIO permission")
 
 if "MadActivity" not in src:
-    activity_xml = (
-        '        <activity\n'
-        '            android:name="com.example.mad.MadActivity"\n'
-        '            android:exported="false"\n'
-        '            android:theme="@style/Theme.MyApplication" />\n'
-    )
-    pidx = src.find("<provider")
-    if pidx == -1:
-        pidx = src.find("</application>")
-        insert_at = src.rfind("\n", 0, pidx) + 1 if pidx != -1 else len(src)
-    else:
-        insert_at = src.rfind("\n", 0, pidx) + 1
-    src = src[:insert_at] + activity_xml + src[insert_at:]
+    idx = src.find("</application>")
+    if idx == -1:
+        print("MAD-PATCH-MANIFEST: FATAL: </application> nahi mila")
+        sys.exit(1)
+    act = ('<activity android:name="com.example.mad.MadActivity" '
+           'android:exported="false" '
+           'android:theme="@style/Theme.MyApplication" />')
+    src = src[:idx] + "        " + act + "\n    " + src[idx:]
     changed.append("MadActivity")
 
 if changed:
