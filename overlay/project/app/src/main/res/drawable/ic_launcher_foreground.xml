@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Outer Shield / Badge Outline in Safe Zone (centered at 54, 54 with r=28) -->
+    <path
+        android:pathData="M54,26 L76,34 C76,56 54,74 54,74 C54,74 32,56 32,34 Z"
+        android:strokeWidth="2.5"
+        android:strokeColor="#FFF5C542">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="32"
+                android:startY="26"
+                android:endX="76"
+                android:endY="74"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#33F5C542" />
+                <item android:offset="1.0" android:color="#1A102B4C" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Gear / Mechanical Symbol -->
+    <path
+        android:pathData="M54,37 C46.268,37 40,43.268 40,51 C40,58.732 46.268,65 54,65 C61.732,65 68,58.732 68,51 C68,43.268 61.732,37 54,37 Z"
+        android:strokeWidth="1.8"
+        android:strokeColor="#804FC3F7"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M54,42 C49.029,42 45,46.029 45,51 C45,55.971 49.029,60 54,60 C58.971,60 63,55.971 63,51 C63,46.029 58.971,42 54,42 Z"
+        android:strokeWidth="1.2"
+        android:strokeColor="#40F5C542"
+        android:fillColor="#10071426" />
+
+    <!-- Lightning Bolt (Electrical Energy) -->
+    <path
+        android:pathData="M56,33 L45,51 L53,51 L49,69 L63,48 L55,48 Z"
+        android:fillColor="#FFF5C542"
+        android:strokeWidth="0.8"
+        android:strokeColor="#FFFFFF" />
+
+    <!-- Subtle Golden Spark Accents -->
+    <path
+        android:pathData="M66,35 L68,39 L72,41 L68,43 L66,47 L64,43 L60,41 L64,39 Z"
+        android:fillColor="#E08FD8FF" />
+</vector>
