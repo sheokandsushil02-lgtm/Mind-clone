@@ -1,52 +1,24 @@
-name: Build MAD-Enabled REMS APK
-
+name: Build MAD APK
 on:
   push:
     branches: [ app-source ]
   workflow_dispatch:
-
 permissions:
   contents: read
   issues: write
-
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout overlay branch
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: app-source
-
-- name: Fetch main branch (original app ZIP)
-        run: git fetch origin main --depth=1
-
-- name: Extract, merge, patch MAD (v6 script handles everything)
-        run: |
-          python3 overlay/patch_home.py app-merged
-          python3 overlay/patch_manifest.py app-merged
-          echo "--- app-merged contents ---"
-          ls app-merged || true
-
-- name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-
-- name: Setup Gradle 9.3.1
-        uses: gradle/actions/setup-gradle@v3
-        with:
-          gradle-version: '9.3.1'
-
-- name: Build Debug APK
-        working-directory: app-merged
-        run: gradle assembleDebug --no-daemon --stacktrace
-
-- name: Upload APK artifact
+      - name: Build via mad_build.sh
+        run: bash overlay/mad_build.sh
+      - name: Upload APK
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: MAD-REMS-APK
           path: app-merged/app/build/outputs/apk/debug/app-debug.apk
           retention-days: 30
-          
