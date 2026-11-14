@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""MAD patch v4 — extractor + HomeScreen patch + diagnostics.
+"""MAD patch v5 — extractor + HomeScreen patch + diagnostics.
 
 argv[1] = merged project dir (default: app-merged)
 
-v4 naya:
-  - ZIP ke andar ki poori file-list GITHUB_STEP_SUMMARY me chapti jaati hai
-    (diagnostics — assistant run page se padh lega)
-  - Nested ZIPs RECURSIVELY khulti hain (zip ke andar zip ke andar zip...)
-  - Hamesha exit 0 — build aage badhta hai
+v5 (CRITICAL FIX): workflow apne step me original-app.zip delete kar deta hai
+is script se thehle. Ab script ZIP khud laati hai — pehle file se, warna
+`git show origin/main:madgitfileforcloud.zip` se, warna GitHub raw URL se.
+Isse build hamesha asli project ke saath aage badhega.
 """
 import glob
 import io
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import traceback
@@ -20,6 +20,7 @@ import zipfile
 
 ROOT = sys.argv[1] if len(sys.argv) > 1 else "app-merged"
 ZIP_NAME = "madgitfileforcloud.zip"
+RAW_URL = "https://github.com/sheokandsushil02-lgtm/Mind-clone/raw/main/" + ZIP_NAME
 OVERLAY_MAD = os.path.join("overlay", "app", "src", "main", "java", "com", "example", "mad")
 MANIFEST = os.path.join(ROOT, "app", "src", "main", "AndroidManifest.xml")
 SUMMARY_LINES = []
@@ -42,6 +43,42 @@ def flush_summary():
 
 
 SKIP_DIRS = {"build", ".gradle", ".idea", "intermediates", "__pycache__", "node_modules"}
+
+
+def ensure_zip():
+    """ZIP maujood na ho to khud laao (git se, warna raw URL se)."""
+    if os.path.isfile(ZIP_NAME) and os.path.getsize(ZIP_NAME) > 100000:
+        log("ZIP maujood hai: " + ZIP_NAME)
+        return True
+    # 1) git se
+    try:
+        log("ZIP gawayab — git se laa raha hoon")
+        r = subprocess.run(
+            ["git", "show", "origin/main:" + ZIP_NAME],
+            stdout=open(ZIP_NAME, "wb"), stderr=subprocess.PIPE, timeout=300
+        )
+        if r.returncode == 0 and os.path.getsize(ZIP_NAME) > 100000:
+            log("git se ZIP aa gayi (%d bytes)" % os.path.getsize(ZIP_NAME))
+            return True
+        log("git se nahi mili: " + r.stderr.decode("utf-8", "replace")[:200])
+    except Exception:
+        log("git fetch fail:")
+        traceback.print_exc()
+    # 2) raw URL se
+    try:
+        log("raw URL se download kar raha hoon")
+        r = subprocess.run(
+            ["curl", "-sSL", "--retry", "3", "-o", ZIP_NAME, RAW_URL],
+            stderr=subprocess.PIPE, timeout=600
+        )
+        if r.returncode == 0 and os.path.isfile(ZIP_NAME) and os.path.getsize(ZIP_NAME) > 100000:
+            log("raw URL se ZIP aa gayi (%d bytes)" % os.path.getsize(ZIP_NAME))
+            return True
+        log("raw URL se bhi fail")
+    except Exception:
+        log("curl fail:")
+        traceback.print_exc()
+    return False
 
 
 def find_project_root(base):
@@ -67,8 +104,8 @@ def unzip_to(zip_path, dst):
 
 
 def extract_real_project(dst):
-    if not os.path.isfile(ZIP_NAME):
-        log("ZIP nahi mila: " + ZIP_NAME)
+    if not ensure_zip():
+        log("FATAL-INFO: ZIP kisi tarah se nahi mili — project merge nahi hoga")
         return False
     tmp = tempfile.mkdtemp(prefix="madzip_")
     try:
@@ -89,7 +126,6 @@ def extract_real_project(dst):
 
         proj = find_project_root(outer)
 
-        # recursive nested zips — zip ke andar zip ke andar zip...
         depth = 0
         while not proj and depth < 5:
             depth += 1
