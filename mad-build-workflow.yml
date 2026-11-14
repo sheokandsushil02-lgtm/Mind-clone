@@ -1,0 +1,178 @@
+name: Build MAD-Enabled REMS APK
+
+on:
+  push:
+    branches: [ app-source ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout overlay branch
+        uses: actions/checkout@v4
+        with:
+          ref: app-source
+
+      - name: Checkout original app from main
+        run: |
+          git fetch origin main --depth=1
+          git worktree add ../original main
+
+      - name: Merge original app + MAD overlay
+        run: |
+          # 1) Copy original ZIP out of the worktree
+          cp ../original/madgitfileforcloud.zip ./original-app.zip
+
+          # 2) Unzip original project
+          unzip -q original-app.zip -d app-merged
+          # ZIP ke andar bhi "app/" ho sakta hai ya direct structure ho — normalize:
+          if [ ! -f "app-merged/settings.gradle.kts" ]; then
+            echo "settings.gradle.kts top-level par nahi mila; andar ke folder me dhoond raha hoon..."
+            INNER=$(find app-merged -maxdepth 3 -name settings.gradle.kts | head -1)
+            if [ -n "$INNER" ]; then
+              mv app-merged "$(dirname "$INNER")"/tmp-merged-root 2>/dev/null || true
+            fi
+          fi
+          ls -la app-merged | head -30
+
+          # 3) Overlay ki nayi files copy (existing files ko overwrite nahi karte, sirf naye add)
+          cp -r overlay/. app-merged/
+          ls -la app-merged/app/src/main/java/com/example/mad/ || true
+
+      - name: Patch HomeScreen — MAD button add karo
+        run: |
+          cd app-merged
+          FILE="app/src/main/java/com/example/ui/screens/HomeScreen.kt"
+          if grep -q "MAD" "$FILE"; then
+            echo "MAD button already present — skip"
+          else
+            python3 - <<'EOF'
+          import re
+          path = "app/src/main/java/com/example/ui/screens/HomeScreen.kt"
+          src = open(path, encoding="utf-8").read()
+
+          mad_import = 'import com.example.mad.MadLauncher\n'
+          src = src.replace('import com.example.utils.ShareAndPrintUtils\n',
+                            'import com.example.utils.ShareAndPrintUtils\n' + mad_import, 1)
+
+          mad_button = '''
+              Spacer(modifier = Modifier.height(16.dp))
+
+              // === MAD AI BUTTON (naya feature overlay) ===
+              Card(
+                  modifier = Modifier
+                      .fillMaxWidth()
+                      .testTag("hub_mad_button")
+                      .clickable { MadLauncher.open(context) },
+                  shape = RoundedCornerShape(28.dp),
+                  colors = CardDefaults.cardColors(containerColor = EditorialLilac),
+                  border = androidx.compose.foundation.BorderStroke(1.dp, EditorialBorderLight)
+              ) {
+                  Row(
+                      modifier = Modifier
+                          .fillMaxWidth()
+                          .padding(18.dp),
+                      verticalAlignment = Alignment.CenterVertically
+                  ) {
+                      Box(
+                          modifier = Modifier
+                              .size(44.dp)
+                              .clip(RoundedCornerShape(14.dp))
+                              .background(EditorialTextOnLilac),
+                          contentAlignment = Alignment.Center
+                      ) {
+                          Text(text = "🎙", fontSize = 22.sp)
+                      }
+
+                      Spacer(modifier = Modifier.width(14.dp))
+
+                      Column(modifier = Modifier.weight(1f)) {
+                          Text(
+                              text = "MAD — Live AI Assistant",
+                              style = MaterialTheme.typography.titleMedium.copy(
+                                  fontWeight = FontWeight.SemiBold,
+                                  color = EditorialTextOnLilac,
+                                  fontSize = 16.sp
+                              )
+                          )
+                          Text(
+                              text = "Bol ke baat karo — Gemini live chat",
+                              style = MaterialTheme.typography.bodySmall.copy(
+                                  color = EditorialTextOnLilac.copy(alpha = 0.8f),
+                                  fontSize = 12.sp
+                              )
+                          )
+                      }
+
+                      Icon(
+                          imageVector = Icons.Default.ChevronRight,
+                          contentDescription = "Open MAD",
+                          tint = EditorialTextOnLilac,
+                          modifier = Modifier.size(22.dp)
+                      )
+                  }
+              }
+          '''
+          marker = '        Spacer(modifier = Modifier.height(20.dp))\n\n        // Quick Utility Actions'
+          if marker in src:
+              src = src.replace(marker, mad_button + '\n        Spacer(modifier = Modifier.height(20.dp))\n\n        Quick Utility Actions placeholder', 1)
+              src = src.replace('Quick Utility Actions placeholder',
+                                '// Quick Utility Actions', 1)
+          else:
+              # fallback: last Card ke baad insert
+              idx = src.rfind('        Spacer(modifier = Modifier.height(20.dp))')
+              if idx == -1:
+                  raise SystemExit("HomeScreen patch marker not found")
+              src = src[:idx] + mad_button + '\n' + src[idx:]
+          open(path, "w", encoding="utf-8").write(src)
+          print("HomeScreen patched with MAD button")
+          EOF
+          fi
+
+      - name: Patch Manifest — RECORD_AUDIO permission
+        run: |
+          cd app-merged
+          FILE="app/src/main/AndroidManifest.xml"
+          if grep -q "RECORD_AUDIO" "$FILE"; then
+            echo "permission already present"
+          else
+            python3 - <<'EOF'
+          path = "app/src/main/AndroidManifest.xml"
+          src = open(path, encoding="+utf-8").read()
+          # XML namespace line ke baad permission insert
+          src = src.replace(
+              '<manifest xmlns:android="http://schemas.android.com/apk/res/android"\n    xmlns:tools="http://schemas.android.com/tools">\n',
+              '<manifest xmlns:android="http://schemas.android.com/apk/res/android"\n    xmlns:tools="http://schemas.android.com/tools">\n\n    <uses-permission android:name="android.permission.RECORD_AUDIO" />\n\n'
+          )
+          open(path, "w", encoding="utf-8").write(src)
+          print("Manifest patched")
+          EOF
+          fi
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Grant execute permission for gradlew
+        run: |
+          chmod +x app-merged/gradlew 2>/dev/null || echo "no gradlew — build will use system gradle"
+          ls app-merged
+
+      - gradle-build: |
+          working-directory: app-merged
+          run: |
+            ./gradlew assembleDebug --no-daemon --stacktrace
+          name: Build Debug APK
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MAD-REMS-APK
+          path: app-merged/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30
