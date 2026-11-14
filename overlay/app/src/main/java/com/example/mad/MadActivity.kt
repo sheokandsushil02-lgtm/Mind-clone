@@ -3,6 +3,7 @@ package com.example.mad
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -10,8 +11,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import android.widget.Toast
 import androidx.core.content.ContextCompat
+import com.example.ui.theme.MyApplicationTheme
 
 /**
  * MAD ki apni Activity — mic permission handle karti hai aur chat screen dikhati hai.
