@@ -5,9 +5,6 @@ on:
     branches: [ app-source ]
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -23,35 +20,36 @@ jobs:
           git show origin/main:madgitfileforcloud.zip > original-app.zip
           ls -la original-app.zip
 
-      - name: Unzip original project
+      - name: Unzip and normalize project root
         run: |
-          unzip -q original-app.zip -d app-merged
-          # ZIP ke andar ka root normalize karo
-          if [ ! -f "app-merged/settings.gradle.kts" ]; then
-            INNER=$(find app-merged -maxdepth 4 -name settings.gradle.kts -print -quit)
-            echo "Found settings.gradle.kts at: $INNER"
-            if [ -n "$INNER" ]; then
-              ROOT=$(dirname "$INNER")
-              mkdir -p /tmp/root
-              mv app-merged/* /tmp/root/ 2>/dev/null || true
-              rm -rf app-merged
-              mkdir -p app-merged
-              cp -r "$ROOT"/. app-merged/
-              rm -rf /tmp/root
-            fi
+          unzip -q original-app.zip -d extracted
+          SETTING=$(find extracted -maxdepth 5 -name settings.gradle.kts -print -quit)
+          if [ -z "$SETTING" ]; then
+            SETTING=$(find extracted -maxdepth 5 -name build.gradle.kts -print -quit)
           fi
+          if [ -z "$SETTING" ]; then
+            echo "ERROR: project root not found"
+            find extracted -maxdepth 3 | head -40
+            exit 1
+          fi
+          ROOT=$(dirname "$SETTING")
+          echo "Project root: $ROOT"
+          mkdir -p app-merged
+          cp -r "$ROOT"/. app-merged/
+          rm -rf extracted original-app.zip
           ls app-merged
 
       - name: Overlay MAD files
         run: |
-          cp -r overlay/. app-merged/
+          cp -r overlay/app/. app-merged/app/
+          cp overlay/patch_home.py overlay/patch_manifest.py app-merged/
           find app-merged/app/src/main/java/com/example/mad/ -type f
 
       - name: Patch HomeScreen with MAD button
-        run: python3 overlay/../app-merged/../overlay/patch_home.py app-merged/app/src/main/java/com/example/ui/screens/HomeScreen.kt
+        run: python3 app-merged/patch_home.py app-merged
 
       - name: Patch Manifest
-        run: python3 overlay/patch_manifest.py app-merged/app/src/main/AndroidManifest.xml
+        run: python3 app-merged/patch_manifest.py app-merged
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -59,11 +57,20 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
+      - name: Setup Gradle 9.3.1
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '9.3.1'
+
       - name: Build Debug APK
         working-directory: app-merged
         run: |
-          chmod +x gradlew 2>/dev/null || true
-          ./gradlew assembleDebug --no-daemon --stacktrace
+          if [ -f gradlew ]; then
+            chmod +x gradlew
+            ./gradlew assembleDebug --no-daemon --stacktrace
+          else
+            gradle assembleDebug --no-daemon --stacktrace
+          fi
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
