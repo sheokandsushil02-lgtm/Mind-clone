@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""MAD build orchestrator v9 - extraction FIX + 3 report channels.
+"""MAD build orchestrator v10 - ASLI SOURCE ZIP se build.
 
-v9 KEY FIX: ZIP extract + nested-zip unpack + project-root finding ab
-yahin hota hai (patch_home me nahi). Pichhli baar app-merged me sirf
-overlay chala gaya tha kyunki patch_home ka extractor root miss kar raha tha.
-Har step announce() se public annotation chhapta hai (login ke bina dikhta hai).
+v10 BADA SACH:
+  repo wali madgitfileforcloud.zip me sirf base.apk hai (compiled APK,
+  1 entry, source nahi). Isliye build ab ASLI Android Studio project
+  download karti hai: f8ed31f0-rems-business.zip (chat-upload URL).
+  Usme settings.gradle.kts, app/, gradle files sab hain.
 """
 import base64
 import glob
@@ -18,13 +19,13 @@ import traceback
 import urllib.request
 import zipfile
 
-ZIP_NAME = "madgitfileforcloud.zip"
-RAW_URL = "https://github.com/sheokandsushil02-lgtm/Mind-clone/raw/main/" + ZIP_NAME
+SOURCE_ZIP_NAME = "f8ed31f0-rems-business.zip"
+SOURCE_ZIP_URL = "https://d3p662obnq9uz2.cloudfront.net/chat-uploads/chat/user/6af7478f74ac87d004bc3005/6af747bc5ce1b36e2aabca96/f8ed31f0-rems-business.zip"
 LOG = "/tmp/mad_build.log"
 SUMMARY = os.environ.get("GITHUB_STEP_SUMMARY", "")
 LINES = []
 SKIP = {"build", ".gradle", ".idea", "intermediates", "__pycache__", "node_modules",
-        ".git", ".aistudio"}
+        ".git", ".aistudio", "assets/.aistudio"}
 
 
 def log(msg):
@@ -99,7 +100,7 @@ def post_issue(subject):
     token = get_token()
     repo = os.environ.get("GITHUB_REPOSITORY", "sheokandsushil02-lgtm/Mind-clone")
     if not token:
-        log("issue skip: token nahi mila (env ya git config dono khali)")
+        log("issue skip: token nahi mila")
         return
     try:
         lf = open(LOG, encoding="utf-8", errors="replace")
@@ -199,43 +200,38 @@ def extract_all(zip_path, dst):
 
 
 def do_extraction():
-    """ZIP laao, sab kuch kholo, asli root dhoondo, app-merged banao."""
-    if not os.path.isfile(ZIP_NAME) or os.path.getsize(ZIP_NAME) < 100000:
-        run(["git", "fetch", "origin", "main", "--depth=1"], quiet=True)
-        p = subprocess.run(["git", "show", "origin/main:" + ZIP_NAME],
-                           stdout=open(ZIP_NAME, "wb"), stderr=subprocess.PIPE)
-        if p.returncode != 0 and (not os.path.isfile(ZIP_NAME) or
-                                 os.path.getsize(ZIP_NAME) < 100000):
-            try:
-                urllib.request.urlretrieve(RAW_URL, ZIP_NAME)
-                log("ZIP raw URL se aayi")
-            except Exception as e:
-                log("raw url fail: " + repr(e)[:200])
-    if not os.path.isfile(ZIP_NAME) or os.path.getsize(ZIP_NAME) < 100000:
-        die("ZIP nahi mili (git + raw url dono fail)")
-    log("ZIP size: " + str(os.path.getsize(ZIP_NAME) // (1024 * 1024)) + " MB")
+    """ASLI source ZIP download + extract + root + app-merged."""
+    if os.path.isfile(SOURCE_ZIP_NAME) and os.path.getsize(SOURCE_ZIP_NAME) > 10000:
+        log("source ZIP maujood hai")
+    else:
+        log("asli source ZIP download kar raha hoon (rems-business)...")
+        try:
+            req = urllib.request.Request(SOURCE_ZIP_URL,
+                                         headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=300) as r, open(SOURCE_ZIP_NAME, "wb") as fo:
+                shutil.copyfileobj(r, fo)
+        except Exception as e:
+            announce("source ZIP download fail: " + repr(e)[:300])
+            die("asli source ZIP download nahi hui (" + repr(e)[:120] + ")")
+    sz = os.path.getsize(SOURCE_ZIP_NAME)
+    announce("source ZIP size: " + str(sz // 1024) + " KB")
+    try:
+        with zipfile.ZipFile(SOURCE_ZIP_NAME) as z:
+            names = z.namelist()
+        if len(names) < 10:
+            announce("source ZIP me sirf " + str(len(names)) + " entries — invalid!")
+            die("source ZIP adhuri lag rahi hai (" + str(len(names)) + " entries)")
+    except Exception:
+        announce("source ZIP padhne me dikkat (invalid/corrupt)")
+        die("source ZIP invalid zip hai")
 
     tmp = tempfile.mkdtemp(prefix="madex_")
     ex = os.path.join(tmp, "ex")
     try:
-        with zipfile.ZipFile(ZIP_NAME) as z:
-            names = z.namelist()
-        announce("ZIP entries: " + str(len(names)))
-        shown = 0
-        for n in names:
-            if shown < 20:
-                announce("Z: " + n[:200])
-                shown += 1
-        nested = extract_all(ZIP_NAME, ex)
+        nested = extract_all(SOURCE_ZIP_NAME, ex)
         announce("nested zips khole: " + str(nested))
-
         strong, weak = find_roots(ex)
-        announce("strong roots: " + str(len(strong)) + " | weak roots: " + str(len(weak)))
-        for r in strong[:4]:
-            announce("STRONG: " + os.path.relpath(r, ex)[:200])
-        for r in weak[:4]:
-            announce("WEAK: " + os.path.relpath(r, ex)[:200])
-
+        announce("strong roots: " + str(len(strong)) + " | weak: " + str(len(weak)))
         root = None
         if strong:
             root = min(strong, key=lambda p: (p.count(os.sep), len(p)))
@@ -251,13 +247,14 @@ def do_extraction():
                 if count > 40:
                     break
             die("project root nahi mila (structure upar annotations me hai)")
-
         announce("ROOT chuna: " + os.path.relpath(root, ex)[:200])
         if os.path.isdir("app-merged"):
             shutil.rmtree("app-merged", ignore_errors=True)
         ignore = shutil.ignore_patterns("build", ".gradle", ".idea", "__pycache__")
         shutil.copytree(root, "app-merged", dirs_exist_ok=True, ignore=ignore)
         announce("app-merged top: " + ", ".join(sorted(os.listdir("app-merged"))[:25])[:250])
+    except SystemExit:
+        raise
     except Exception:
         announce("EXTRACT CRASH: " + traceback.format_exc(limit=3)[-400:])
         die("extraction crash")
@@ -266,7 +263,7 @@ def do_extraction():
 
 
 def main():
-    log("SCRIPT-START v9")
+    log("SCRIPT-START v10")
     open(LOG, "w").close()
 
     for s in ("overlay/patch_home.py", "overlay/patch_manifest.py"):
@@ -274,7 +271,6 @@ def main():
             die(s + " syntax error")
     log("patch scripts compile OK")
 
-    # KEY FIX: extraction yahin, patch_home se pehle
     do_extraction()
 
     if run([sys.executable, "overlay/patch_home.py", "app-merged"]) != 0:
