@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
-"""MAD patch v3 — extractor + HomeScreen patch + build fixes.
+"""MAD patch v4 — extractor + HomeScreen patch + diagnostics.
 
 argv[1] = merged project dir (default: app-merged)
 
-Order:
-  0. AndroidManifest missing? -> madgitfileforcloud.zip se asli project nikalo
-     (outer + nested zip dono). Mile to app-merged me merge karo.
-  1. MAD overlay .kt files dobara copy (safety).
-  2. HomeScreen me MAD button + import.
-  3. debug signing fix (debug.keystore missing ho to).
-  4. gradlew hata do -> system gradle 9.3.1 use hoga.
-Har step graceful — script build nahi rokta, bas summary me sab likhta hai.
+v4 naya:
+  - ZIP ke andar ki poori file-list GITHUB_STEP_SUMMARY me chapti jaati hai
+    (diagnostics — assistant run page se padh lega)
+  - Nested ZIPs RECURSIVELY khulti hain (zip ke andar zip ke andar zip...)
+  - Hamesha exit 0 — build aage badhta hai
 """
 import glob
 import io
@@ -44,7 +41,6 @@ def flush_summary():
             pass
 
 
-# ---------- 0) real project extractor ----------
 SKIP_DIRS = {"build", ".gradle", ".idea", "intermediates", "__pycache__", "node_modules"}
 
 
@@ -76,42 +72,63 @@ def extract_real_project(dst):
         return False
     tmp = tempfile.mkdtemp(prefix="madzip_")
     try:
+        try:
+            with zipfile.ZipFile(ZIP_NAME) as z:
+                names = z.namelist()
+            log("ZIP me kul %d files hain. Pehli 300:" % len(names))
+            for n in names[:300]:
+                log("  Z " + n)
+        except Exception:
+            log("ZIP padhne me dikkat:")
+            traceback.print_exc()
+            return False
+
         outer = os.path.join(tmp, "outer")
         unzip_to(ZIP_NAME, outer)
         log("outer ZIP extract ho gaya")
+
         proj = find_project_root(outer)
-        if proj:
-            log("project outer ZIP me mila: " + os.path.relpath(proj, outer))
-        else:
-            log("outer me project nahi — nested zips khol raha hoon")
-            inner_id = 0
+
+        # recursive nested zips — zip ke andar zip ke andar zip...
+        depth = 0
+        while not proj and depth < 5:
+            depth += 1
+            inner_zips = []
             for dirpath, dirnames, filenames in os.walk(outer):
+                dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
                 for fn in filenames:
-                    if not fn.lower().endswith(".zip"):
-                        continue
-                    inner_id += 1
-                    inner_src = os.path.join(dirpath, fn)
-                    inner_dst = os.path.join(tmp, "inner_%d" % inner_id)
-                    try:
-                        unzip_to(inner_src, inner_dst)
-                        log("nested ZIP khola: " + fn)
-                    except Exception:
-                        log("nested ZIP nahi khula: " + fn)
-                        continue
-                    proj = find_project_root(inner_dst)
-                    if proj:
-                        log("project nested ZIP me mila: " + os.path.relpath(proj, inner_dst))
-                        break
-                if proj:
-                    break
+                    if fn.lower().endswith(".zip"):
+                        inner_zips.append(os.path.join(dirpath, fn))
+            if not inner_zips:
+                log("aur koi nested ZIP nahi mili (depth %d)" % depth)
+                break
+            log("depth %d: %d nested ZIPs mili" % (depth, len(inner_zips)))
+            for i, iz in enumerate(inner_zips):
+                idst = os.path.join(tmp, "nested_%d_%d" % (depth, i))
+                try:
+                    unzip_to(iz, idst)
+                    log("nested ZIP khola: " + os.path.basename(iz))
+                    os.remove(iz)
+                except Exception:
+                    log("nested ZIP nahi khuli: " + os.path.basename(iz))
+                    continue
+            proj = find_project_root(outer)
+
         if not proj:
-            log("WARNING: ZIP me project root nahi mila — structure dump:")
+            log("PROJECT ROOT NAHI MILA. extracted ka structure dump:")
+            count = 0
             for dirpath, dirnames, filenames in os.walk(outer):
+                dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
                 rel = os.path.relpath(dirpath, outer)
-                if rel.count(os.sep) <= 2:
-                    log("  " + rel + " :: " + ", ".join(sorted(filenames)[:10]))
+                log("  D " + rel + " :: " + ", ".join(sorted(filenames)[:12]))
+                count += 1
+                if count > 80:
+                    log("  ... (aur bhi bahut hain)")
+                    break
             return False
-        ignore = shutil.ignore_patterns("build", ".gradle", ".idea", "*.jks")
+
+        log("project mila: " + os.path.relpath(proj, outer))
+        ignore = shutil.ignore_patterns("build", ".gradle", ".idea", "*.jks", "*.keystore")
         shutil.copytree(proj, dst, dirs_exist_ok=True, ignore=ignore)
         log("asli project app-merged me merge ho gaya")
         return True
@@ -132,9 +149,9 @@ else:
 if os.path.isfile(MANIFEST):
     log("AndroidManifest.xml OK")
 else:
-    log("FATAL: AndroidManifest.xml ab bhi nahi mila — gradle fail hoga")
+    log("FATAL-INFO: AndroidManifest.xml nahi mila — gradle aage fail hoga, par summary me structure hai")
 
-# ---------- 1) MAD overlay .kt files ----------
+# MAD overlay .kt files (safety copy)
 try:
     if os.path.isdir(OVERLAY_MAD):
         target_mad = os.path.join(ROOT, "app", "src", "main", "java", "com", "example", "mad")
@@ -147,7 +164,7 @@ try:
 except Exception:
     traceback.print_exc()
 
-# ---------- 2) HomeScreen MAD button ----------
+# HomeScreen MAD button
 target = None
 cands = glob.glob(os.path.join(ROOT, "app/src/main/java/**/HomeScreen.kt"), recursive=True)
 for c in cands:
@@ -158,7 +175,7 @@ if not target and cands:
     target = cands[0]
 
 if not target:
-    log("FATAL: HomeScreen.kt nahi mila — MAD button add nahi hua")
+    log("FATAL-INFO: HomeScreen.kt nahi mila — MAD button add nahi hua")
 else:
     log("HomeScreen target = " + target)
     try:
@@ -254,7 +271,7 @@ else:
         log("HomeScreen patch me dikkat:")
         traceback.print_exc()
 
-# ---------- 3) debug signing fix ----------
+# debug signing fix
 try:
     ks = os.path.join(ROOT, "debug.keystore")
     bld = os.path.join(ROOT, "app", "build.gradle.kts")
@@ -272,7 +289,7 @@ try:
 except Exception:
     traceback.print_exc()
 
-# ---------- 4) gradlew removal (system gradle 9.3.1 use hoga) ----------
+# gradlew hatao — system gradle use hoga
 try:
     for gw in ("gradlew", "gradlew.bat"):
         p = os.path.join(ROOT, gw)
