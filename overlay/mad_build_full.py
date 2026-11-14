@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""MAD build orchestrator v11 - source ZIP download via proxy fallbacks.
+"""MAD build orchestrator v12 - repo-local source ZIP first.
 
-v11: GitHub runner se chat-upload URL par 403 aa raha tha (IP block).
-Ab 4 strategies: direct -> allorigins proxy -> corsproxy -> ghproxy style.
-ZIP integrity bhi check hoti hai (entries >= 30 warna fail).
+v12: build me ZIP download ki zaroorat hi nahi — source ZIP agar
+repo (app-source branch) me maujood ho to wahin se use hoti hai.
+Download strategies sirf fallback ke liye hain.
 """
 import base64
 import glob
@@ -19,6 +19,8 @@ import urllib.request
 import zipfile
 
 SOURCE_ZIP_NAME = "rems-source.zip"
+REPO_ZIP_CANDIDATES = ["f8ed31f0-rems-business.zip", "rems-source.zip",
+                        "rems-business.zip", "source.zip"]
 SOURCE_URL = "https://d3p662obnq9uz2.cloudfront.net/chat-uploads/chat/user/6af7478f74ac87d004bc3005/6af747bc5ce1b36e2aabca96/f8ed31f0-rems-business.zip"
 LOG = "/tmp/mad_build.log"
 SUMMARY = os.environ.get("GITHUB_STEP_SUMMARY", "")
@@ -157,8 +159,46 @@ def run(cmd, quiet=False):
     return p.returncode
 
 
+def zip_looks_like_source(path):
+    try:
+        with zipfile.ZipFile(path) as z:
+            names = z.namelist()
+        ok = len(names) >= 30 and any("settings.gradle" in n for n in names)
+        return ok, len(names)
+    except Exception:
+        return False, 0
+
+
+def locate_source_zip():
+    """v12: pehle repo/workspace me ZIP dhoondo (download ki zaroorat nahi)."""
+    # 1) workspace me candidate names
+    for cand in REPO_ZIP_CANDIDATES:
+        if os.path.isfile(cand):
+            ok, n = zip_looks_like_source(cand)
+            if ok:
+                shutil.copyfile(cand, SOURCE_ZIP_NAME)
+                announce("source ZIP repo se mili: " + cand + " (" + str(n) + " entries)")
+                return True
+            log("candidate " + cand + " source nahi lagti (" + str(n) + " entries)")
+    # 2) git me dhoondo (current branch par)
+    try:
+        p = subprocess.run(["git", "ls-files", "*.zip"],
+                           capture_output=True, text=True, timeout=60)
+        for rel in (p.stdout or "").splitlines():
+            rel = rel.strip()
+            if not rel or rel == "madgitfileforcloud.zip":
+                continue
+            ok, n = zip_looks_like_source(rel)
+            if ok:
+                shutil.copyfile(rel, SOURCE_ZIP_NAME)
+                announce("source ZIP git se mili: " + rel + " (" + str(n) + " entries)")
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def fetch(url, dst, tag):
-    """Ek URL se download karke size return; fail par None."""
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"})
         with urllib.request.urlopen(req, timeout=300) as r, open(dst, "wb") as fo:
@@ -175,6 +215,8 @@ def download_source_zip():
     if os.path.isfile(SOURCE_ZIP_NAME) and os.path.getsize(SOURCE_ZIP_NAME) > 100000:
         log("source ZIP maujood hai")
         return True
+    if locate_source_zip():
+        return True
     enc = urllib.parse.quote(SOURCE_URL, safe="")
     strategies = [
         ("direct", SOURCE_URL),
@@ -185,7 +227,6 @@ def download_source_zip():
     for tag, url in strategies:
         sz = fetch(url, SOURCE_ZIP_NAME, tag)
         if sz and sz > 100000:
-            # zip integrity check
             try:
                 with zipfile.ZipFile(SOURCE_ZIP_NAME) as z:
                     n = len(z.namelist())
@@ -197,7 +238,7 @@ def download_source_zip():
                 log("zip invalid [" + tag + "]: " + repr(e)[:120])
         if os.path.isfile(SOURCE_ZIP_NAME):
             os.remove(SOURCE_ZIP_NAME)
-    announce("SAARI download strategies fail — 403/block")
+    announce("SAARI download strategies fail — ZIP ko repo me upload karna hoga")
     return False
 
 
@@ -244,7 +285,7 @@ def extract_all(zip_path, dst):
 
 def do_extraction():
     if not download_source_zip():
-        die("source ZIP kisi strategy se nahi aayi (sab 403/blocked)")
+        die("source ZIP nahi mili — repo me upload karo (f8ed31f0-rems-business.zip)")
     tmp = tempfile.mkdtemp(prefix="madex_")
     ex = os.path.join(tmp, "ex")
     try:
@@ -283,7 +324,7 @@ def do_extraction():
 
 
 def main():
-    log("SCRIPT-START v11")
+    log("SCRIPT-START v12")
     open(LOG, "w").close()
 
     for s in ("overlay/patch_home.py", "overlay/patch_manifest.py"):
